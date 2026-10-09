@@ -11,6 +11,10 @@ A pygame window for the C++ engine. It looks like the official
 
 ![viewer](screenshot.png)
 
+Each bot keeps its colour and its place in the panel in every game.
+`game.py` rotates the bots between games, so the official viewer, which
+colours by player number, changed every bot's colour at each new game.
+
 A side panel shows, for each bot, its name, game score, total score across
 the rotated games, energy, lighthouses owned and keys held.
 
@@ -83,7 +87,7 @@ Each line is one JSON object, of one of three types:
 
 | `type` | when | contents |
 |---|---|---|
-| `game` | once per game, after the bots greet | `island`, `lighthouses`, `names`, `cumulative` (scores so far), `game`, `games`, `rounds` |
+| `game` | once per game, after the bots greet | `island`, `lighthouses`, `names`, `slots` (each player's position on the command line), `cumulative` (scores so far), `game`, `games`, `rounds` |
 | `frame` | after each pre_round (`"phase": "pre"`), each bot's turn (`"turn"`, with `player`) and each post_round (`"post"`) | lighthouse `[owner, energy]` list, connections and triangles as lighthouse indices, players as `[x, y, score, energy, keys, alive]` |
 | `end` | after the last game | final `scores` |
 

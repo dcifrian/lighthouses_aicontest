@@ -106,6 +106,7 @@ void FrameSink::emit(const std::string& line, bool wait_ack) {
 }
 
 void FrameSink::game_start(const Game& g, int game, int games, long rounds, const std::vector<py::Str>& names,
+                           const std::vector<int>& slots,
                            const std::vector<std::pair<py::Str, int64_t>>& cumulative) {
     if (!active()) return;
     std::string m = "{\"type\": \"game\", \"game\": " + std::to_string(game) + ", \"games\": " +
@@ -124,6 +125,8 @@ void FrameSink::game_start(const Game& g, int game, int games, long rounds, cons
         if (i) m += ", ";
         py::json_dump_str(m, names[i]);
     }
+    m += "], \"slots\": [";
+    for (size_t i = 0; i < slots.size(); i++) m += (i ? ", " : "") + std::to_string(slots[i]);
     m += "], \"cumulative\": ";
     append_scores(m, cumulative);
     m += "}\n";

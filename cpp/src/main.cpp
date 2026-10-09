@@ -201,7 +201,9 @@ int main(int argc, char** argv) {
             if (frames.active()) {
                 std::vector<py::Str> names;
                 for (auto& a : actors) names.push_back(a->name);
-                frames.game_start(game, int(gn), int(n), rounds, names, scores);
+                std::vector<int> slots;
+                for (size_t j = 0; j < n; j++) slots.push_back(int((gn + j) % n));
+                frames.game_start(game, int(gn), int(n), rounds, names, slots, scores);
             }
 
             for (long round = 0; round < rounds; round++) {

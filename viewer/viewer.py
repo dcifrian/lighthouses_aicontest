@@ -55,6 +55,18 @@ def calpha(col1, col2, a):
     return (int(r2 * a + r1 * (1 - a)), int(g2 * a + g1 * (1 - a)), int(b2 * a + b1 * (1 - a)))
 
 
+def player_slot(game, num):
+    """Position on the command line of the bot playing as player `num`."""
+    slots = game.get("slots")  # absent in recordings made before slots existed
+    return slots[num] if slots and num < len(slots) else num
+
+
+def player_color(game, num):
+    # By bot, not by player number: game.py rotates the bots between games,
+    # and colouring by player number made every bot change colour each game.
+    return PLAYERC[player_slot(game, num) % len(PLAYERC)]
+
+
 class Store(object):
     """All games and frames seen so far (appended to by the reader thread)."""
 
@@ -343,7 +355,7 @@ class Viewer(object):
                 bg = (int(25 + c * 0.8), int(25 + c * 0.8), int(25 + c))
                 for owner in tint.get((cx, cy), ()):
                     if owner >= 0:
-                        bg = calpha(bg, PLAYERC[owner % len(PLAYERC)], 0.15)
+                        bg = calpha(bg, player_color(game, owner), 0.15)
                 rect(px, py, CELL, CELL, bg)
                 rect(px + CELL // 2, py + CELL // 2, 1, 1, (255, 255, 255))
                 cplayers = at.get((cx, cy))
@@ -354,11 +366,11 @@ class Viewer(object):
                     for i, num in enumerate(cplayers):
                         iy, ix = i // nx, i % nx
                         rect(px + 2 + ix * wx, py + 2 + iy * wy, wx - 1, wy - 1,
-                             cmul(PLAYERC[num % len(PLAYERC)], 0.5))
+                             cmul(player_color(game, num), 0.5))
                 li = lh_index.get((cx, cy))
                 if li is not None:
                     owner = owners[li]
-                    color = PLAYERC[owner % len(PLAYERC)] if owner >= 0 else (192, 192, 192)
+                    color = player_color(game, owner) if owner >= 0 else (192, 192, 192)
                     mx, my = ox + (px + CELL / 2.0) * scale, oy + (py + CELL / 2.0) * scale
                     s = 4 * scale
                     pygame.draw.polygon(self.screen, color,
@@ -366,7 +378,7 @@ class Viewer(object):
         width = max(1, int(round(scale)))
         for a, b in frame["conns"]:
             owner = owners[a]
-            color = PLAYERC[owner % len(PLAYERC)] if owner >= 0 else (192, 192, 192)
+            color = player_color(game, owner) if owner >= 0 else (192, 192, 192)
             (x0, y0), (x1, y1) = lhs[a], lhs[b]
             p0 = (ox + (x0 * CELL + CELL / 2.0) * scale, oy + ((nh - y0) * CELL + CELL / 2.0) * scale)
             p1 = (ox + (x1 * CELL + CELL / 2.0) * scale, oy + ((nh - y1) * CELL + CELL / 2.0) * scale)
@@ -394,10 +406,13 @@ class Viewer(object):
             phase = "end of round (scored)"
         y += self.text(phase, (x, y), (180, 180, 180), self.small) + 14
         owners = [o for o, e in frame["lh"]]
-        for num, p in enumerate(frame["players"]):
-            px, py, score, energy, keys, alive = p
+        # One block per bot in command-line order, so each bot keeps its place
+        # (and colour) when game.py rotates the bots between games.
+        order = sorted(range(len(frame["players"])), key=lambda n: player_slot(game, n))
+        for num in order:
+            px, py, score, energy, keys, alive = frame["players"][num]
             name = game["names"][num] if num < len(game["names"]) else "P%d" % num
-            color = PLAYERC[num % len(PLAYERC)]
+            color = player_color(game, num)
             total = game["cumulative"].get(name, 0) + score
             y += self.text("P%d %s%s" % (num, name, "" if alive else "  (killed)"), (x, y), color)
             y += self.text("score %d   total %d" % (score, total), (x + 14, y), (220, 220, 220), self.small)

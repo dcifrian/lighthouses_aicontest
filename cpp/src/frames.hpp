@@ -25,8 +25,10 @@ public:
     bool start_viewer(const std::string& cmdline);
     bool active() const { return record_ || viewer_out_ >= 0; }
 
+    // slots[p] = position on the command line of the bot playing as player p
+    // (game.py rotates the bots between games); the viewer colours by slot.
     void game_start(const Game& g, int game, int games, long rounds, const std::vector<py::Str>& names,
-                    const std::vector<std::pair<py::Str, int64_t>>& cumulative);
+                    const std::vector<int>& slots, const std::vector<std::pair<py::Str, int64_t>>& cumulative);
     // phase is "pre", "turn" or "post"; player is the bot that just moved.
     void frame(const Game& g, int game, long round, const char* phase, int player,
                const std::vector<bool>& alive);
