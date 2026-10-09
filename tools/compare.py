@@ -13,8 +13,13 @@ Your own bots (one --bot per player; the same command may be repeated):
         [--map maps/island.txt | --map all] [--rounds N] [--fast] [--runs N]
 
 With --bot, the Python engine is first run twice to check that the bots are
-deterministic (same input -> same output); otherwise differences between the
-engines could come from the bots and the comparison would be meaningless.
+deterministic (same input -> same output). If they are not, compare.py
+switches to record & replay: each scenario is played once by the Python
+engine with the real bots, and the C++ engine then gets the exact replies the
+bots sent there (tools/bots/replaybot.py). If both engines are identical they
+send the same messages, so the replayed replies are still the right ones; the
+first differing message shows where they diverge. --replay forces this mode,
+--no-replay stops at the determinism check instead.
 
 Each scenario is played by both engines with the same bots. Compared byte
 for byte:
@@ -24,11 +29,12 @@ for byte:
 stderr is compared after dropping timing-dependent lines (soft-timeout
 warnings) and tracebacks, and only reported as a warning.
 """
-import argparse, concurrent.futures, difflib, glob, os, random, shlex, subprocess, sys, tempfile
+import argparse, ast, concurrent.futures, difflib, glob, json, os, random, shlex, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTBOT = os.path.join(ROOT, "tools", "bots", "testbot.py")
 PYREF = os.path.join(ROOT, "tools", "pyref.py")
+REPLAYBOT = os.path.join(ROOT, "tools", "bots", "replaybot.py")
 
 # Faults whose outcome is deterministic in the Python engine. exit_after and
 # bad_move_exit race the bot's exit against the engine's next write, so
@@ -150,35 +156,94 @@ def check_determinism(sc, args, workdir):
     return None
 
 
-def run_scenario(sc, args, workdir):
+def build_recording(transcript_path, out_path):
+    """Turn a pyref transcript into {"P-K": [raw reply lines]} for replaybot.py."""
+    rec, current, games = {}, {}, {}
+    with open(transcript_path, encoding="utf-8", errors="surrogateescape") as f:
+        for line in f:
+            tag, rest = line.rstrip("\n").split(" ", 1)
+            player = int(tag[1:])
+            if tag[0] == ">" and rest.startswith('{"player_num"'):
+                k = games.get(player, 0)
+                games[player] = k + 1
+                current[player] = rec.setdefault("%d-%d" % (player, k), [])
+            elif tag[0] == "<":
+                data = ast.literal_eval(rest)
+                if data:
+                    current[player].append(data.decode("latin-1"))
+    with open(out_path, "w") as f:
+        json.dump(rec, f)
+
+
+def replay_reason(workdir):
+    """Why the recorded game cannot be replayed faithfully, or None."""
+    out = read(os.path.join(workdir, "py.out"))
+    if "over hard timeout" in out:
+        return "a bot hit the hard timeout (replayed bots answer instantly)"
+    return None
+
+
+def cpp_command(sc, args, workdir, tag, bots):
+    cmd = [args.cpp] + common_options(sc) + ["--transcript", os.path.join(workdir, tag + ".tr"),
+                                             "--state-dump", os.path.join(workdir, tag + ".st"), sc["map"]]
+    if sc["fast"]:
+        cmd.append("FAST")
+    return cmd + bots
+
+
+def compare_runs(workdir, left, right, rc_left, rc_right, label=""):
+    problems = []
+    if rc_left != rc_right:
+        problems.append("%sexit code: %s %r, %s %r" % (label, left, rc_left, right, rc_right))
+    for ext, name in (("out", "stdout"), ("tr", "transcript"), ("st", "state dump")):
+        d = first_diff(read(os.path.join(workdir, left + "." + ext)), read(os.path.join(workdir, right + "." + ext)),
+                       label + name, left, right)
+        if d:
+            problems.append(d)
+    return problems
+
+
+def run_scenario(sc, args, workdir, sanity=False):
+    """Returns (problems, warnings, skipped_reason)."""
     os.makedirs(workdir, exist_ok=True)
     py_cmd = py_command(sc, args, workdir, "py")
-    cpp_cmd = [args.cpp] + common_options(sc) + ["--transcript", os.path.join(workdir, "cpp.tr"),
-                                                 "--state-dump", os.path.join(workdir, "cpp.st"), sc["map"]]
-    if sc["fast"]:
-        cpp_cmd.append("FAST")
-    cpp_cmd += sc["bots"]
+    rc_py = run_engine(py_cmd, workdir, "py", args.timeout, args.bot_cwd)
+    bots = sc["bots"]
+    if args.replay:
+        reason = replay_reason(workdir)
+        if reason:
+            return [], [], reason
+        rec = os.path.join(workdir, "recording.json")
+        build_recording(os.path.join(workdir, "py.tr"), rec)
+
+        def replay_bots(claims):
+            cmd = " ".join(shlex.quote(c) for c in [args.bot_python, REPLAYBOT, rec, os.path.join(workdir, claims)])
+            return [cmd] * len(sc["bots"])
+        bots = replay_bots("claims-cpp")
+    cpp_cmd = cpp_command(sc, args, workdir, "cpp", bots)
     with open(os.path.join(workdir, "scenario.txt"), "w") as f:
         f.write("cwd: %s\n" % (args.bot_cwd or os.getcwd()) +
                 " ".join(shlex.quote(c) for c in py_cmd) + "\n" +
                 " ".join(shlex.quote(c) for c in cpp_cmd) + "\n")
-    rc_py = run_engine(py_cmd, workdir, "py", args.timeout, args.bot_cwd)
     rc_cpp = run_engine(cpp_cmd, workdir, "cpp", args.timeout, args.bot_cwd)
-    problems, warnings = [], []
-    if rc_py != rc_cpp:
-        problems.append("exit code: py %r, cpp %r" % (rc_py, rc_cpp))
-    for ext, name in (("out", "stdout"), ("tr", "transcript"), ("st", "state dump")):
-        d = first_diff(read(os.path.join(workdir, "py." + ext)), read(os.path.join(workdir, "cpp." + ext)), name)
-        if d:
-            problems.append(d)
+    problems, warnings = compare_runs(workdir, "py", "cpp", rc_py, rc_cpp), []
+    if args.replay and sanity:
+        # The replay mechanism itself: Python + replayed bots must equal
+        # Python + real bots, or the comparison above proves nothing.
+        rp_cmd = [args.python, PYREF] + common_options(sc) + [
+            "--transcript", os.path.join(workdir, "pyreplay.tr"),
+            "--state-dump", os.path.join(workdir, "pyreplay.st")] + (["--fast"] if sc["fast"] else [])
+        rp_cmd += [sc["map"]] + replay_bots("claims-pyreplay")
+        rc_rp = run_engine(rp_cmd, workdir, "pyreplay", args.timeout, args.bot_cwd)
+        problems += compare_runs(workdir, "py", "pyreplay", rc_py, rc_rp, "replay sanity check: ")
     if problems:
         problems.append("artifacts: " + workdir)
     a = clean_stderr(read(os.path.join(workdir, "py.err")))
     b = clean_stderr(read(os.path.join(workdir, "cpp.err")))
-    if a != b:
+    if a != b and not args.replay:  # replayed bots have no stderr of their own
         warnings.append("stderr differs:\n" + "\n".join(
             difflib.unified_diff(a, b, "py", "cpp", lineterm="", n=0)))
-    return problems, warnings
+    return problems, warnings, None
 
 
 def parse_scenario(s):
@@ -209,6 +274,10 @@ def main():
     ap.add_argument("--bot-cwd", help="working directory for both engines and their bots (default: current)")
     ap.add_argument("--no-check-determinism", action="store_true",
                     help="skip running the Python engine twice to check that the --bot bots are deterministic")
+    ap.add_argument("--replay", action="store_true",
+                    help="compare by record & replay (automatic when the bots are not deterministic)")
+    ap.add_argument("--no-replay", action="store_true",
+                    help="stop instead of switching to record & replay when the bots are not deterministic")
     ap.add_argument("--bot-python", default=sys.executable, help="interpreter for the bundled test bots")
     ap.add_argument("--runs", type=int, help="random scenarios to play (default 20), or repetitions of each "
                     "--bot/--scenario scenario (default 1)")
@@ -248,37 +317,52 @@ def main():
                          "fast": args.fast, "bots": args.bot, "hard": args.hard_timeout})
     if custom:
         scenarios = [sc for sc in base for _ in range(args.runs or 1)]
-        if args.bot and not args.no_check_determinism and scenarios:
+        if args.bot and not args.no_check_determinism and not args.replay and scenarios:
             print("checking that the bots are deterministic (Python engine twice on %s)..." %
                   os.path.relpath(scenarios[0]["map"]))
             sys.stdout.flush()
             d = check_determinism(scenarios[0], args, os.path.join(workroot, "determinism"))
-            if d:
+            if d and args.no_replay:
                 print("The Python engine produced different results in two identical runs, so the bots are "
                       "not deterministic\n(unseeded randomness, timing, or state kept between runs such as "
                       "files they read back).\nEngine comparisons would be meaningless. First difference:")
                 print("  " + d.replace("\n", "\n  "))
                 print("artifacts: " + os.path.join(workroot, "determinism"))
-                print("Make the bots deterministic (e.g. a fixed seed) or pass --no-check-determinism.")
+                print("Make the bots deterministic or drop --no-replay to compare by record & replay.")
                 sys.exit(2)
-            print("ok, deterministic")
+            if d:
+                print("not deterministic (first difference: %s)" % d.split("\n")[0])
+                print("switching to record & replay: the C++ engine gets the exact replies your bots sent "
+                      "to the Python engine")
+                args.replay = True
+            else:
+                print("ok, deterministic")
+        if args.replay and not args.bot and not args.scenario:
+            sys.exit("--replay needs --bot or --scenario")
     else:
+        if args.replay:
+            sys.exit("--replay needs --bot or --scenario")
         r = random.Random(args.seed)
         scenarios = [random_scenario(r, args.bot_python) for _ in range(args.runs or 20)]
 
-    failed = 0
+    failed = skipped = 0
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as ex:
-        futs = {ex.submit(run_scenario, sc, args, os.path.join(workroot, "run%04d" % i)): i
+        futs = {ex.submit(run_scenario, sc, args, os.path.join(workroot, "run%04d" % i), i == 0): i
                 for i, sc in enumerate(scenarios)}
         for fut in concurrent.futures.as_completed(futs):
             i = futs[fut]
-            problems, warnings = fut.result()
+            problems, warnings, skip = fut.result()
             sc = scenarios[i]
             label = "run%04d %s rounds=%d%s players=%d" % (
                 i, os.path.relpath(sc["map"]), sc["rounds"], " FAST" if sc["fast"] else "", len(sc["bots"]))
             if custom:
                 label += "  [" + " | ".join(sc["bots"]) + "]"
-            if problems:
+            if args.replay:
+                label += "  (replay)"
+            if skip:
+                skipped += 1
+                print("skip " + label + "\n  not replayable: " + skip)
+            elif problems:
                 failed += 1
                 print("FAIL " + label)
                 for p in problems:
@@ -288,7 +372,9 @@ def main():
             for w in warnings:
                 print("  warning: " + w.replace("\n", "\n    "))
             sys.stdout.flush()
-    print("%d/%d scenarios identical (artifacts in %s)" % (len(scenarios) - failed, len(scenarios), workroot))
+    print("%d/%d scenarios identical%s (artifacts in %s)" % (
+        len(scenarios) - failed - skipped, len(scenarios) - skipped,
+        ", %d not replayable" % skipped if skipped else "", workroot))
     sys.exit(1 if failed else 0)
 
 

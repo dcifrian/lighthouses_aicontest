@@ -127,12 +127,29 @@ python3 tools/compare.py --cpp build/lighthouses --python $PY310 \
 
 Things to know when using your own bots:
 
-- **Determinism check.** Before comparing, the Python engine plays the
-  first scenario twice. If the two runs differ, your bots are not
-  deterministic (unseeded randomness, timing, or files they read back), and
-  the script stops with exit code 2: engine differences would be
-  meaningless. Use a fixed seed, or pass `--no-check-determinism` to compare
-  anyway.
+- **Bots don't need to be deterministic.** Before comparing, the Python
+  engine plays the first scenario twice. If the two runs differ (unseeded
+  randomness, timing, or files the bot reads back), `compare.py` switches to
+  **record & replay**:
+  1. The Python engine plays the scenario with your real bots, and every
+     reply they send is recorded.
+  2. The C++ engine then plays it with `tools/bots/replaybot.py`, which
+     answers each message with the recorded reply.
+
+  If both engines are identical they send the same messages, so the
+  recorded replies stay correct turn after turn. The first differing
+  message points at the divergence. As a check on the mechanism itself, the
+  first scenario is also replayed on the Python engine, and that run must
+  equal the original.
+  - Scenarios where a bot hit the hard timeout are reported as not
+    replayable, because replayed replies come back instantly.
+  - `--replay` forces this mode. `--no-replay` stops at the determinism
+    check instead.
+  - JVM flags can't make a Java bot deterministic. `new Random()`,
+    `Math.random()` and `ThreadLocalRandom` are seeded from the clock, and
+    HashMap/HashSet iteration over objects with identity hash codes, threads
+    and time-limited searches vary from run to run as well. Replay sidesteps
+    all of this.
 - **Parallel runs.** With `--bot`, scenarios run one at a time (`-j 1`),
   because bots that write log files could disturb each other in parallel.
 - **Signals and Java bots.** `/bin/sh` is dash on most Linux systems, and it
