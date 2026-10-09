@@ -15,7 +15,8 @@ Keys:
   Right, Left    one frame forward / back (a frame is a pre_round, a bot's
                  turn or a post_round)
   Shift+Right/Left  one round forward / back
-  Up, Down       faster / slower
+  Up, Down       faster / slower (1-100 rounds/s; default 15, about the
+                 pace of the official engine's window)
   F              fast: follow the engine as quickly as the bots answer
   Home, End      first / last frame
   PgUp, PgDn     previous / next game
@@ -35,7 +36,10 @@ PLAYERC = [
     (128, 0, 0), (0, 0, 128), (0, 128, 0), (128, 128, 0),
     (0, 128, 128), (128, 0, 128), (128, 127, 0), (128, 127, 127),
 ]
-SPEEDS = [1, 2, 5, 10, 25, 60]  # frames per second
+# Playback speeds in rounds per second. The official view.py runs at roughly
+# 12-20 rounds/s with 4 bots (a redraw after every turn plus 20 ms per round).
+SPEEDS = [1, 2, 5, 10, 15, 25, 50, 100]
+DEFAULT_SPEED = 15
 PANEL_W = 360
 CELL = 15  # view.py's cell size; drawing below is in these units, then scaled
 
@@ -86,6 +90,7 @@ class Engine(object):
         self.in_fd = in_fd
         self.waiting = False      # the engine is blocked until we answer
         self.auto_ack = False     # fast mode: answer as soon as a frame arrives
+        self.want = 0             # frames playback still needs: answer while > 0
         self.closed = False
         self.lock = threading.Lock()
         threading.Thread(target=self._reader, daemon=True).start()
@@ -118,7 +123,10 @@ class Engine(object):
             elif msg.get("type") == "frame":
                 with self.lock:
                     self.waiting = True
-                if self.auto_ack:
+                    ack = self.auto_ack or self.want > 0
+                    if ack and not self.auto_ack:
+                        self.want -= 1
+                if ack:
                     self.next()
         self.store.ended = True
 
@@ -140,7 +148,7 @@ class Engine(object):
 
 
 class Viewer(object):
-    def __init__(self, store, engine, size, speed=10, playing=True, fast=False, exit_at_end=False):
+    def __init__(self, store, engine, size, speed=DEFAULT_SPEED, playing=True, fast=False, exit_at_end=False):
         self.store = store
         self.engine = engine
         self.cursor = -1
@@ -149,7 +157,8 @@ class Viewer(object):
         self.fast = fast
         self.exit_at_end = exit_at_end
         self.seek = None  # predicate: keep moving forward until a frame matches
-        self.next_time = 0.0
+        self.credit = 0.0  # frames playback is allowed to advance
+        self.last_tick = time.monotonic()
         pygame.init()
         pygame.display.set_caption("Lighthouses")
         self.screen = pygame.display.set_mode(size, pygame.RESIZABLE)
@@ -191,8 +200,15 @@ class Viewer(object):
                     self.playing = False
                 return
 
+    def frames_per_round(self):
+        frames = self.frames()
+        if not frames:
+            return 1
+        return len(self.store.games[frames[max(0, self.cursor)]["gi"]]["names"]) + 2
+
     def update(self):
         now = time.monotonic()
+        dt, self.last_tick = now - self.last_tick, now
         if self.cursor < 0 and self.frames():
             self.cursor = 0
         if self.engine:
@@ -207,11 +223,34 @@ class Viewer(object):
                 self.step_seek(40)
             return
         if self.seek:
-            self.step_seek(1 if self.playing else 10 ** 6)
-        elif self.playing and now >= self.next_time:
-            self.next_time = now + 1.0 / SPEEDS[self.speed]
-            self.forward()
-            self.step_seek(1)
+            self.step_seek(10 ** 6)
+            return
+        if not self.playing:
+            self.credit = 0.0
+            if self.engine:
+                self.engine.want = 0
+            return
+        # Accumulate playback credit and spend it all, drawing only the newest
+        # frame, so speeds above the 60 Hz redraw rate really are faster. Cap
+        # it so a stall (slow bot, paused engine) doesn't cause a burst.
+        rate = SPEEDS[self.speed] * self.frames_per_round()
+        self.credit = min(self.credit + dt * rate, rate * 0.25 + 1)
+        n = int(self.credit)
+        available = len(self.frames()) - 1 - self.cursor
+        take = min(n, available)
+        self.cursor += take
+        self.credit -= take
+        if n > take:
+            if self.engine and not self.store.ended:
+                self.engine.want = n - take
+                if self.engine.waiting:
+                    with self.engine.lock:
+                        self.engine.want -= 1
+                    self.engine.next()
+            else:
+                self.playing = False
+        elif self.engine:
+            self.engine.want = 0
 
     def handle_key(self, ev):
         k, shift = ev.key, ev.mod & pygame.KMOD_SHIFT
@@ -337,9 +376,9 @@ class Viewer(object):
                 pygame.draw.line(self.screen, color, p0, p1, width)
 
     def text(self, s, pos, color=(255, 255, 255), font=None):
-        surf = (font or self.font).render(s, True, color)
-        self.screen.blit(surf, pos)
-        return surf.get_height()
+        font = font or self.font
+        self.screen.blit(font.render(s, True, color), pos)
+        return font.get_linesize()  # fixed, so lines below never shift
 
     def draw_panel(self, game, frame, x, y):
         y += self.text("Game %d/%d   Round %d/%d" % (game["game"] + 1, game["games"], frame["round"] + 1,
@@ -369,7 +408,7 @@ class Viewer(object):
         if self.fast:
             state = "FAST"
         elif self.playing:
-            state = "PLAYING  %d frames/s" % SPEEDS[self.speed]
+            state = "PLAYING  %d rounds/s" % SPEEDS[self.speed]
         else:
             state = "PAUSED"
         y += self.text(state, (x, y), (255, 255, 160)) + 2
@@ -443,7 +482,8 @@ def main():
     ap.add_argument("recording", nargs="?")
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--size", default="1400x800", help="window size WxH")
-    ap.add_argument("--speed", type=int, default=10, help="initial playback speed in frames/s")
+    ap.add_argument("--speed", type=int, default=DEFAULT_SPEED,
+                    help="initial playback speed in rounds/s (default %d)" % DEFAULT_SPEED)
     ap.add_argument("--paused", action="store_true", help="start paused")
     ap.add_argument("--fast", action="store_true", help="start in fast mode")
     ap.add_argument("--exit-at-end", action="store_true", help="close the window after the last frame")

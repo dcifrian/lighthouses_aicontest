@@ -57,7 +57,7 @@ at all.
 | Space | play / pause |
 | Right, Left | one frame forward / back |
 | Shift + Right / Left | one round forward / back |
-| Up, Down | faster / slower (1, 2, 5, 10, 25, 60 frames/s) |
+| Up, Down | faster / slower: 1, 2, 5, 10, 15, 25, 50 or 100 rounds/s. The default, 15, is about the pace of the official engine's window |
 | F | fast: in live mode, follows the engine as fast as the bots answer; in a recording, plays at maximum speed |
 | Home, End | first / last frame |
 | PgUp, PgDn | previous / next game |
@@ -70,7 +70,7 @@ while the engine waits.
 
 | option | meaning |
 |---|---|
-| `--speed N` | initial speed in frames/s (default 10) |
+| `--speed N` | initial speed in rounds/s (default 15) |
 | `--paused` | start paused |
 | `--fast` | start in fast mode |
 | `--exit-at-end` | close the window after the last frame |
