@@ -104,7 +104,44 @@ scenario it compares, byte for byte:
 - a full state dump after every phase: energy map, lighthouses, connections
   in set order, triangles, players and keys
 
-You can pass your own bots with `--scenario 'MAP|ROUNDS|FAST(0/1)|cmd|cmd...'`.
+### Comparing with your own bots
+
+Pass one `--bot` per player, quoted the way you would quote it in a shell.
+Repeat the same command to make a bot play itself:
+
+```sh
+python3 tools/compare.py --cpp build/lighthouses --python $PY310 \
+    --bot 'java -cp Ungoliant/gson-2.8.6.jar:. Ungoliant.Ungoliant' \
+    --bot 'java -cp Ungoliant/gson-2.8.6.jar:. Ungoliant.Ungoliant' \
+    --map all --rounds 1200
+```
+
+| option | meaning |
+|---|---|
+| `--map PATH` | repeatable; `all` means every map; default `maps/island.txt` |
+| `--rounds N` | rounds per game; default 1200, or 500 with `--fast` |
+| `--fast` | FAST mode |
+| `--runs N` | repeats each map N times |
+| `--hard-timeout S` | passed to both engines |
+| `--bot-cwd DIR` | working directory for both engines and their bots, for relative classpaths; default: the current directory |
+
+Things to know when using your own bots:
+
+- **Determinism check.** Before comparing, the Python engine plays the
+  first scenario twice. If the two runs differ, your bots are not
+  deterministic (unseeded randomness, timing, or files they read back), and
+  the script stops with exit code 2: engine differences would be
+  meaningless. Use a fixed seed, or pass `--no-check-determinism` to compare
+  anyway.
+- **Parallel runs.** With `--bot`, scenarios run one at a time (`-j 1`),
+  because bots that write log files could disturb each other in parallel.
+- **Signals and Java bots.** `/bin/sh` is dash on most Linux systems, and it
+  runs the command as a child instead of replacing itself with it. So the
+  per-turn SIGSTOP/SIGCONT and the SIGINT at close reach only the shell, not
+  your JVM, unless the command starts with `exec`. Both engines behave the
+  same way.
+
+The older `--scenario 'MAP|ROUNDS|FAST(0/1)|cmd|cmd...'` form still works.
 
 `tools/pyref.py` is the reference runner. It executes the unmodified
 `engine/game.py` headless: the pygame view is stubbed out and the long
