@@ -191,7 +191,7 @@ forma:
   otorgados será equivalente al DOBLE del área del triángulo exterior.
 
   o-----o
-   \`o'/
+   \`o´/
     \|/     
      o
 

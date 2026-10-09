@@ -1,42 +1,72 @@
-#!/usr/bin/python3
+#!/usr/bin/python
+import os
+os.environ['SDL_VIDEO_WINDOW_POS'] = "%d,%d" % (0,0)
 
 import sys, time
 import engine, botplayer
 import view
+import itertools
 
 cfg_file = sys.argv[1]
 bots = sys.argv[2:]
 DEBUG = False
-CONTINUE_ON_ERROR = False
 
-config = engine.GameConfig(cfg_file)
-game = engine.Game(config, len(bots))
-actors = [botplayer.BotPlayer(game, i, cmdline, debug=DEBUG) for i, cmdline in enumerate(bots)]
+view = view.GameView()
 
-for actor in actors:
-    actor.initialize()
+ROUNDS=1200
 
-view = view.GameView(game)
+perms = [[bots[(i+j)%len(bots)] for j in range(len(bots))] for i in range(len(bots))]
 
-round = 0
-while True:
-    game.pre_round()
-    view.update()
+scores = {}
+
+for gn, bots in enumerate(perms):
+    config = engine.GameConfig(cfg_file)
+    game = engine.Game(config, len(bots))
+    view.attach(game)
+    view.title = "Game %d/%d" % (gn+1, len(perms))
+    print("Launching bots...")
+    actors = [botplayer.BotPlayer(game, i, cmdline, debug=DEBUG) for i, cmdline in enumerate(bots)]
+    print("Bots launched.")
     for actor in actors:
-        try:
-            actor.turn()
-        except botplayer.CommError as e:
-            if not CONTINUE_ON_ERROR:
-                raise
-            else:
-                print("CommError: " + str(e))
-                actor.close()
-        view.update()
-    game.post_round()
-    s = "########### ROUND %d SCORE: " % round
-    for i in range(len(bots)):
-        s += "P%d: %d " % (i, game.players[i].score)
-    print(s)
-    round += 1
+        actor.initialize()
 
-view.update()
+    for i in game.players:
+        if i.name in scores:
+            i.cumscore = scores[i.name]
+        else:
+            i.cumscore = 0
+
+    view.update()
+    if not gn:
+        time.sleep(10)
+    time.sleep(5)
+
+    round = 0
+    while round < ROUNDS:
+        view.title = "Game %d/%d - Round %d/%d" % (gn+1, len(perms), round+1, ROUNDS)
+        game.pre_round()
+        view.update()
+        for actor in actors:
+            actor.turn()
+            view.update()
+        game.post_round()
+        print("########### ROUND %d SCORE:" % round, end=' ')
+        for i in range(len(bots)):
+            print("P%d: %d" % (i, game.players[i].score), end=' ')
+        print()
+        round += 1
+        time.sleep(0.02)
+
+    view.update()
+    time.sleep(2)
+
+    for i in game.players:
+        if i.name not in scores:
+            scores[i.name] = 0
+        scores[i.name] += i.score
+
+    for i in actors:
+        i.close()
+
+print(repr(scores))
+time.sleep(1500)

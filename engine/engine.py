@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
 import geom, math
 
@@ -191,7 +191,7 @@ class Game(object):
             if geom.intersect(tuple(c), (orig.pos, dest.pos)):
                 raise MoveError("Connection cannot intersect another connection")
             if orig.pos in c:
-                third = next(l for l in c if l != orig.pos)
+                third = next((l for l in c if l != orig.pos))
                 if frozenset((third, dest.pos)) in self.conns:
                     new_tris.add((orig.pos, dest.pos, third))
 

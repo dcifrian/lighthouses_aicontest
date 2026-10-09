@@ -23,7 +23,7 @@ class Bot(object):
         self.player_count = init_state["player_count"]
         self.init_pos = init_state["position"]
         self.map = init_state["map"]
-        self.lighthouses = map(tuple, init_state["lighthouses"])
+        self.lighthouses = list(map(tuple, init_state["lighthouses"]))
 
     def play(self, state):
         """Jugar: llamado cada turno.
@@ -49,7 +49,7 @@ class Bot(object):
 
     def log(self, message, *args):
         """Mostrar mensaje de registro por stderr"""
-        print >>sys.stderr, "[%s] %s" % (self.NAME, (message % args))
+        print("[%s] %s" % (self.NAME, (message % args)), file=sys.stderr)
 
     # ==========================================================================
     # Jugadas posibles

@@ -1,31 +1,29 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
-import json, subprocess, time, select, sys, os, fcntl
+import json, subprocess, time, select, sys, signal
 import engine
 
 class CommError(Exception):
     pass
 
 class BotPlayer(object):
-    INIT_TIMEOUT = 2.0
-    MOVE_TIMEOUT = 0.1
-    MOVE_HARDTIMEOUT = 0.5
+    INIT_TIMEOUT = 15.0
+    MOVE_TIMEOUT = 0.2
+    MOVE_HARDTIMEOUT = 1.0
     def __init__(self, game, playernum, cmdline, debug=False):
         self.alive = True
         self.p = subprocess.Popen(cmdline, stdin=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
-        flag = fcntl.fcntl(self.p.stdout.fileno(), fcntl.F_GETFD)
-        fcntl.fcntl(self.p.stdout.fileno(), fcntl.F_SETFL, flag | os.O_NONBLOCK)
         self.game = game
         self.player = game.players[playernum]
         self.debug = debug
 
     def _send(self, data):
-        line = json.dumps(data).encode("ascii")
-        assert b"\n" not in line
+        line = json.dumps(data)
+        assert "\n" not in line
         if self.debug:
             print(">>P%d: %r" % (self.player.num, line))
         try:
-            self.p.stdin.write(line + b"\n")
+            self.p.stdin.write("{line}\n".format(line=line).encode())
             self.p.stdin.flush()
         except:
             raise CommError("Error sending data")
@@ -34,17 +32,13 @@ class BotPlayer(object):
         st = time.time()
         et = time.time() + soft_timeout
         ht = time.time() + hard_timeout
-        line = b""
+        line = ""
         try:
-            while not line or line[-1] != 10:
-                to = max(0, ht - time.time())
-                r,w,e = select.select([self.p.stdout],[],[],to)
+            while not line or line[-1] != "\n":
+                r,w,e = select.select([self.p.stdout],[],[],ht - time.time())
                 if self.p.stdout not in r:
                     raise CommError("Bot %r over hard timeout" % self.player.name)
-                c = os.read(self.p.stdout.fileno(), 1)
-                if not c:
-                    raise CommError("Bot closed stdout")
-                line += c
+                line = self.p.stdout.readline().decode()
         except Exception as e:
             raise CommError("Unknown error: %r" % e)
         if time.time() > et:
@@ -74,15 +68,23 @@ class BotPlayer(object):
         self.player.name = reply["name"]
 
     def turn(self):
+        try:
+            self._turn()
+        except Exception as e:
+            print("Bot %s failed with exception %r, killing" % (self.player.name, e))
+            self.close()
+
+    def _turn(self):
         if not self.alive:
             return
+        self.p.send_signal(signal.SIGCONT) # Resume process execution for this turn
         lighthouses = []
         for lh in self.game.lighthouses.values():
-            connections = [next(l for l in c if l is not lh.pos)
+            connections = [next((l for l in c if l is not lh.pos))
                             for c in self.game.conns if lh.pos in c]
             lighthouses.append({
                 "position": lh.pos,
-                "owner": lh.owner,
+                "owner": lh.owner if lh.owner is not None else -1,
                 "energy": lh.energy,
                 "connections": connections,
                 "have_key": lh.pos in self.player.keys,
@@ -122,12 +124,14 @@ class BotPlayer(object):
             else:
                 raise engine.MoveError("Invalid command %r" % move["command"])
             self._send({"success": True})
+            self.p.send_signal(signal.SIGSTOP) # Stop all process threads until the next turn
         except engine.MoveError as e:
             #sys.stderr.write("Bot %r move error: %s\n" % (self.player.name, e.message))
             self._send({"success": False, "message": str(e)})
 
     def close(self):
         if self.alive:
+            self.p.send_signal(signal.SIGCONT) # Resume process execution before closing it
             self.p.stdin.close()
             self.p.stdout.close()
             for i in range(100):
@@ -135,7 +139,7 @@ class BotPlayer(object):
                 if self.p.poll() is not None:
                     break
             else:
-                self.p.terminate()
+                self.p.send_signal(2)
                 for i in range(100):
                     time.sleep(0.01)
                     if self.p.poll() is not None:
