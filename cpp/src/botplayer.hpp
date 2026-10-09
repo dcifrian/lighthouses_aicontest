@@ -63,6 +63,7 @@ private:
     std::string rbuf_;      // BufferedReader contents
     size_t rpos_ = 0;
     bool last_log_eof_ = false;
+    unsigned seen_child_exits_ = ~0u;  // g_child_exits when we last called waitpid
 };
 
 // Messages, formatted exactly like json.dumps().

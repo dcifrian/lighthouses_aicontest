@@ -8,6 +8,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -18,6 +20,25 @@ extern char** environ;
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// Counts SIGCHLD (child exits only: SA_NOCLDSTOP). Popen.poll() runs before
+// every SIGCONT/SIGSTOP; when no child has exited since a bot's last check
+// that bot is certainly alive, so the waitpid() syscall can be skipped.
+std::atomic<unsigned> g_child_exits{0};
+
+void on_sigchld(int) { g_child_exits.fetch_add(1, std::memory_order_relaxed); }
+
+void install_sigchld_handler() {
+    static bool installed = false;
+    if (installed) return;
+    installed = true;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_sigchld;
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGCHLD, &sa, nullptr);
+}
 
 double now() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
 
@@ -116,6 +137,7 @@ std::string state_message(const Game& game, int playernum) {
 
 BotPlayer::BotPlayer(Game& game, int playernum, const std::string& cmdline, const BotOptions& opts)
     : game_(game), num_(playernum), opts_(opts) {
+    install_sigchld_handler();
     name = py::from_ascii("Player " + std::to_string(playernum));
     int inpipe[2], outpipe[2];
     if (pipe2(inpipe, O_CLOEXEC) != 0 || pipe2(outpipe, O_CLOEXEC) != 0)
@@ -150,6 +172,9 @@ BotPlayer::BotPlayer(Game& game, int playernum, const std::string& cmdline, cons
 
 bool BotPlayer::poll_child() {
     if (exited_) return true;
+    unsigned exits = g_child_exits.load(std::memory_order_relaxed);
+    if (exits == seen_child_exits_) return false;
+    seen_child_exits_ = exits;  // read before waitpid: a later exit bumps it again
     int st;
     pid_t r = waitpid(pid_, &st, WNOHANG);
     if (r == pid_) {
@@ -224,13 +249,15 @@ py::Value BotPlayer::recv(double soft_timeout, double hard_timeout) {
         double timeout = ht - now();
         if (timeout < 0) throw unknown("ValueError('timeout must be non-negative')");
         struct pollfd pfd = {out_fd_, POLLIN, 0};
-        struct timespec ts;
-        ts.tv_sec = time_t(timeout);
-        ts.tv_nsec = long((timeout - double(ts.tv_sec)) * 1e9);
         int r;
-        do {
+        while (true) {  // like select() since PEP 475: retry with the remaining time
+            struct timespec ts;
+            ts.tv_sec = time_t(timeout);
+            ts.tv_nsec = long((timeout - double(ts.tv_sec)) * 1e9);
             r = ppoll(&pfd, 1, &ts, nullptr);
-        } while (r < 0 && errno == EINTR);
+            if (r >= 0 || errno != EINTR) break;
+            timeout = std::max(0.0, ht - now());
+        }
         if (r <= 0) throw unknown(py::exc_repr("CommError", "Bot " + py::repr(name) + " over hard timeout"));
         std::string raw;
         try {

@@ -30,6 +30,8 @@ const char* kUsage =
     "\n"
     "options (must come before MAP):\n"
     "  --rounds N          rounds per game (default 1200; 500 with FAST)\n"
+    "  --games N           games to play (default: one per bot); game g uses\n"
+    "                      the bot list rotated by g, like game.py\n"
     "  --init-timeout S    seconds to answer the init message (default 15)\n"
     "  --soft-timeout S    seconds per turn before a warning (default 2)\n"
     "  --hard-timeout S    seconds per turn before the bot is killed (default 10)\n"
@@ -117,6 +119,7 @@ int main(int argc, char** argv) {
     bool view = false;
     std::string viewer_cmd = std::string("python3 '") + LH_VIEWER + "' --live";
     long rounds = -1;
+    long games = -1;
     FILE* state_dump = nullptr;
     int i = 1;
     for (; i < argc && strncmp(argv[i], "--", 2) == 0; i++) {
@@ -136,6 +139,8 @@ int main(int argc, char** argv) {
         const char* v = argv[++i];
         if (a == "--rounds") {
             rounds = long(parse_double(a.c_str(), v));
+        } else if (a == "--games") {
+            games = long(parse_double(a.c_str(), v));
         } else if (a == "--init-timeout") {
             opts.init_timeout = parse_double(a.c_str(), v);
         } else if (a == "--soft-timeout") {
@@ -187,7 +192,8 @@ int main(int argc, char** argv) {
     std::vector<std::unique_ptr<BotPlayer>> actors;
     try {
         size_t n = bots.size();
-        for (size_t gn = 0; gn < n; gn++) {
+        size_t ngames = games < 0 ? n : size_t(games);
+        for (size_t gn = 0; gn < ngames; gn++) {
             std::vector<std::string> perm;
             for (size_t j = 0; j < n; j++) perm.push_back(bots[(gn + j) % n]);
             GameConfig config = GameConfig::load(cfg_file);
@@ -203,7 +209,7 @@ int main(int argc, char** argv) {
                 for (auto& a : actors) names.push_back(a->name);
                 std::vector<int> slots;
                 for (size_t j = 0; j < n; j++) slots.push_back(int((gn + j) % n));
-                frames.game_start(game, int(gn), int(n), rounds, names, slots, scores);
+                frames.game_start(game, int(gn), int(ngames), rounds, names, slots, scores);
             }
 
             for (long round = 0; round < rounds; round++) {

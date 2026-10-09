@@ -23,6 +23,7 @@ def parse_args():
     ap.add_argument("--fast", action="store_true",
                     help="use the numba fork's game.py in FAST mode")
     ap.add_argument("--rounds", type=int)
+    ap.add_argument("--games", type=int, help="number of games (default: one per bot)")
     ap.add_argument("--init-timeout", type=float)
     ap.add_argument("--soft-timeout", type=float)
     ap.add_argument("--hard-timeout", type=float)
@@ -157,6 +158,11 @@ def main():
         src = f.read()
     if args.rounds is not None:
         src = re.sub(r"^ROUNDS\s*=\s*\d+", "ROUNDS=%d" % args.rounds, src, flags=re.M)
+    if args.games is not None:
+        # perms = [... for i in range(len(bots))]: same rotations, N games
+        src, k = re.subn(r"(^perms = .*for i in range\()len\(bots\)(\)\])", r"\g<1>%d\2" % args.games,
+                         src, flags=re.M)
+        assert k == 1, "could not patch the number of games in " + script
     sys.argv = argv
     code = compile(src, script, "exec")
     exec(code, {"__name__": "__main__", "__file__": script})

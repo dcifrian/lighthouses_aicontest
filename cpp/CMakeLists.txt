@@ -8,6 +8,19 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options(-Wall -Wextra)
 
+# Release builds use -O3. Measured on this engine, -march=native, -mtune=native
+# and LTO are all within noise of plain -O3 (the engine spends ~80% of its CPU in
+# the kernel on pipes and signals), and -Os was ~2x slower in user time. Native
+# tuning is on by default anyway; turn it off for a binary that runs on other CPUs.
+option(LH_NATIVE "Optimise for this machine's CPU (-march=native -mtune=native)" ON)
+if(LH_NATIVE)
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-march=native" LH_HAS_MARCH_NATIVE)
+  if(LH_HAS_MARCH_NATIVE)
+    add_compile_options(-march=native -mtune=native)
+  endif()
+endif()
+
 add_library(lhcore STATIC src/pyval.cpp src/engine.cpp src/botplayer.cpp src/frames.cpp)
 target_include_directories(lhcore PUBLIC src)
 

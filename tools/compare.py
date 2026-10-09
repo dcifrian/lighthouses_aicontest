@@ -61,7 +61,8 @@ def random_scenario(r, bot_python):
             if fault == "hang":
                 hard = 1.0
         bots.append(" ".join(shlex.quote(c) for c in cmd))
-    return {"map": m, "rounds": rounds, "fast": fast, "bots": bots, "hard": hard}
+    games = r.choice([0, 1, 3, 7]) if r.random() < 0.2 else None
+    return {"map": m, "rounds": rounds, "fast": fast, "bots": bots, "hard": hard, "games": games}
 
 
 SCENARIO_HELP = """--scenario takes 'MAP|ROUNDS|FAST|BOT CMD|BOT CMD...', fields separated by '|':
@@ -138,6 +139,8 @@ def py_command(sc, args, workdir, tag):
 
 def common_options(sc):
     opts = ["--rounds", str(sc["rounds"])]
+    if sc.get("games") is not None:
+        opts += ["--games", str(sc["games"])]
     if sc.get("hard"):
         opts += ["--hard-timeout", str(sc["hard"])]
     return opts
@@ -270,6 +273,7 @@ def main():
                     help="map for --bot runs (repeatable, 'all' = every map; default maps/island.txt)")
     ap.add_argument("--rounds", type=int, help="rounds per game for --bot runs (default 1200, 500 with --fast)")
     ap.add_argument("--fast", action="store_true", help="FAST mode for --bot runs")
+    ap.add_argument("--games", type=int, help="games per run for --bot runs (default: one per bot)")
     ap.add_argument("--hard-timeout", type=float, help="hard turn timeout for --bot runs (both engines)")
     ap.add_argument("--bot-cwd", help="working directory for both engines and their bots (default: current)")
     ap.add_argument("--no-check-determinism", action="store_true",
@@ -314,7 +318,7 @@ def main():
                 print("skipping %s: %d bots but only %d start positions" % (m, len(args.bot), map_starts(m)))
                 continue
             base.append({"map": m, "rounds": args.rounds if args.rounds is not None else (500 if args.fast else 1200),
-                         "fast": args.fast, "bots": args.bot, "hard": args.hard_timeout})
+                         "fast": args.fast, "bots": args.bot, "hard": args.hard_timeout, "games": args.games})
     if custom:
         scenarios = [sc for sc in base for _ in range(args.runs or 1)]
         if args.bot and not args.no_check_determinism and not args.replay and scenarios:
@@ -353,8 +357,9 @@ def main():
             i = futs[fut]
             problems, warnings, skip = fut.result()
             sc = scenarios[i]
-            label = "run%04d %s rounds=%d%s players=%d" % (
-                i, os.path.relpath(sc["map"]), sc["rounds"], " FAST" if sc["fast"] else "", len(sc["bots"]))
+            label = "run%04d %s rounds=%d%s players=%d%s" % (
+                i, os.path.relpath(sc["map"]), sc["rounds"], " FAST" if sc["fast"] else "", len(sc["bots"]),
+                "" if sc.get("games") is None else " games=%d" % sc["games"])
             if custom:
                 label += "  [" + " | ".join(sc["bots"]) + "]"
             if args.replay:

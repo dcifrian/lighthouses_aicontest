@@ -31,11 +31,16 @@ def main():
     t = threading.Thread(target=watch_hwm, args=(p.pid, hwm), daemon=True)
     t.start()
     # Reap only once the watcher has seen the final VmHWM (zombies lose it).
+    own = None
     while True:
         try:
             with open("/proc/%d/stat" % p.pid) as f:
-                if f.read().split(")")[-1].split()[0] == "Z":
-                    break
+                fields = f.read().split(")")[-1].split()
+            if fields[0] == "Z":
+                # utime/stime of the engine itself (not its bots), in clock ticks
+                tick = os.sysconf("SC_CLK_TCK")
+                own = (int(fields[11]) / tick, int(fields[12]) / tick)
+                break
         except FileNotFoundError:
             break
         time.sleep(0.01)
@@ -45,6 +50,8 @@ def main():
     print("wall %.2f s  cpu %.2f s (user %.2f + sys %.2f, incl. bots)  engine peak rss %.1f MB  exit %d" % (
         wall, ru.ru_utime + ru.ru_stime, ru.ru_utime, ru.ru_stime, hwm[0] / 1024.0,
         os.waitstatus_to_exitcode(status)))
+    if own:
+        print("engine alone: user %.2f s + sys %.2f s" % own)
 
 if __name__ == "__main__":
     main()

@@ -14,6 +14,16 @@ cmake --build build -j
 ./build/lighthouses --help
 ```
 
+The build is a Release build (`-O3`) tuned for the build machine's CPU
+(`-march=native -mtune=native`). If the binary has to run on other machines,
+add `-DLH_NATIVE=OFF`.
+
+Compiler flags make little difference here. I measured `-O2`, `-O3`,
+native tuning and LTO and they were all within noise of each other, while
+`-Os` doubled the engine's user CPU time. About 80% of the engine's CPU time
+is kernel time spent on pipe I/O and the SIGCONT/SIGSTOP pair sent every
+turn.
+
 ## Usage
 
 ```sh
@@ -35,6 +45,7 @@ Options (they must come before `MAP`):
 | option | default | official engine |
 |---|---|---|
 | `--rounds N` | 1200 (500 with `FAST`) | 1200 |
+| `--games N` | one per bot | one per bot. Game g uses the bot list rotated by g, as in `game.py`, so N can be smaller or larger than the number of bots |
 | `--init-timeout S` | 15 | 15 |
 | `--soft-timeout S` | 2 | 0.2 |
 | `--hard-timeout S` | 10 | 1.0 |
@@ -126,6 +137,7 @@ python3 tools/compare.py --cpp build/lighthouses --python $PY310 \
 |---|---|
 | `--map PATH` | repeatable; `all` means every map; default `maps/island.txt` |
 | `--rounds N` | rounds per game; default 1200, or 500 with `--fast` |
+| `--games N` | number of games; default one per bot |
 | `--fast` | FAST mode |
 | `--runs N` | repeats each map N times |
 | `--hard-timeout S` | passed to both engines |
