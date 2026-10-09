@@ -18,6 +18,7 @@
 
 #include "botplayer.hpp"
 #include "engine.hpp"
+#include "frames.hpp"
 #include "pyval.hpp"
 
 namespace {
@@ -34,6 +35,9 @@ const char* kUsage =
     "  --hard-timeout S    seconds per turn before the bot is killed (default 10)\n"
     "  --transcript FILE   log every line sent to / read from the bots\n"
     "  --state-dump FILE   log the full game state after every phase\n"
+    "  --record FILE       record the game for the viewer (viewer/viewer.py FILE)\n"
+    "  --view              watch live in the viewer, which also controls the pace\n"
+    "  --viewer CMD        viewer command for --view (default: python3 viewer/viewer.py --live)\n"
     "\n"
     "FAST (first argument after MAP) mimics the numba fork's FAST mode: no\n"
     "per-round score lines.\n";
@@ -109,6 +113,9 @@ int main(int argc, char** argv) {
     setvbuf(stdout, outbuf, isatty(1) ? _IOLBF : _IOFBF, sizeof outbuf);
 
     BotOptions opts;
+    FrameSink frames;
+    bool view = false;
+    std::string viewer_cmd = std::string("python3 '") + LH_VIEWER + "' --live";
     long rounds = -1;
     FILE* state_dump = nullptr;
     int i = 1;
@@ -117,6 +124,10 @@ int main(int argc, char** argv) {
         if (a == "--help") {
             fputs(kUsage, stdout);
             return 0;
+        }
+        if (a == "--view") {
+            view = true;
+            continue;
         }
         if (i + 1 >= argc) {
             fprintf(stderr, "missing value for %s\n%s", a.c_str(), kUsage);
@@ -131,6 +142,13 @@ int main(int argc, char** argv) {
             opts.move_timeout = parse_double(a.c_str(), v);
         } else if (a == "--hard-timeout") {
             opts.move_hardtimeout = parse_double(a.c_str(), v);
+        } else if (a == "--record") {
+            if (!frames.open_record(v)) {
+                perror(v);
+                return 2;
+            }
+        } else if (a == "--viewer") {
+            viewer_cmd = v;
         } else if (a == "--transcript" || a == "--state-dump") {
             FILE* f = fopen(v, "we");
             if (!f) {
@@ -155,6 +173,15 @@ int main(int argc, char** argv) {
     }
     if (rounds < 0) rounds = fast ? 500 : 1200;
     std::vector<std::string> bots(argv + i, argv + argc);
+    if (view && !frames.start_viewer(viewer_cmd)) {
+        fprintf(stderr, "could not start the viewer: %s\n", viewer_cmd.c_str());
+        return 2;
+    }
+    auto alive = [&](const auto& actors) {
+        std::vector<bool> v;
+        for (auto& a : actors) v.push_back(a->alive());
+        return v;
+    };
 
     std::vector<std::pair<py::Str, int64_t>> scores;
     std::vector<std::unique_ptr<BotPlayer>> actors;
@@ -171,16 +198,24 @@ int main(int argc, char** argv) {
                 actors.push_back(std::make_unique<BotPlayer>(game, int(j), perm[j], opts));
             out("Bots launched.\n");
             for (auto& a : actors) a->initialize();
+            if (frames.active()) {
+                std::vector<py::Str> names;
+                for (auto& a : actors) names.push_back(a->name);
+                frames.game_start(game, int(gn), int(n), rounds, names, scores);
+            }
 
             for (long round = 0; round < rounds; round++) {
                 game.pre_round();
                 if (state_dump) dump_state(state_dump, "pre", game);
+                if (frames.active()) frames.frame(game, int(gn), round, "pre", -1, alive(actors));
                 for (auto& a : actors) {
                     a->turn();
                     if (state_dump) dump_state(state_dump, "turn" + std::to_string(a->player().num), game);
+                    if (frames.active()) frames.frame(game, int(gn), round, "turn", a->player().num, alive(actors));
                 }
                 game.post_round();
                 if (state_dump) dump_state(state_dump, "post", game);
+                if (frames.active()) frames.frame(game, int(gn), round, "post", -1, alive(actors));
                 if (!fast) {
                     std::string line = "########### ROUND " + std::to_string(round) + " SCORE: ";
                     for (const Player& p : game.players)
@@ -205,6 +240,7 @@ int main(int argc, char** argv) {
             s += py::repr(scores[k].first) + ": " + std::to_string(scores[k].second);
         }
         out(s + "}\n");
+        frames.end(scores);
     } catch (const PyError& e) {
         fflush(stdout);
         fprintf(stderr, "Traceback (most recent call last):\n  (C++ engine)\n%s: %s\n", e.qualname.c_str(),
@@ -215,6 +251,7 @@ int main(int argc, char** argv) {
             } catch (const PyError&) {
             }
         }
+        frames.wait_viewer();
         return 1;
     } catch (const FatalError& e) {
         fflush(stdout);
@@ -226,9 +263,11 @@ int main(int argc, char** argv) {
             } catch (const PyError&) {
             }
         }
+        frames.wait_viewer();
         return 1;
     }
     fflush(stdout);
+    frames.wait_viewer();
     if (opts.transcript) fclose(opts.transcript);
     if (state_dump) fclose(state_dump);
     return 0;

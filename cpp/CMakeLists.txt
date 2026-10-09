@@ -8,11 +8,13 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options(-Wall -Wextra)
 
-add_library(lhcore STATIC src/pyval.cpp src/engine.cpp src/botplayer.cpp)
+add_library(lhcore STATIC src/pyval.cpp src/engine.cpp src/botplayer.cpp src/frames.cpp)
 target_include_directories(lhcore PUBLIC src)
 
 add_executable(lighthouses src/main.cpp)
 target_link_libraries(lighthouses lhcore)
+get_filename_component(LH_VIEWER_PY "${CMAKE_SOURCE_DIR}/../viewer/viewer.py" ABSOLUTE)
+target_compile_definitions(lighthouses PRIVATE LH_VIEWER="${LH_VIEWER_PY}")
 
 # Tests. The fixture generators need a CPython 3.10 interpreter; point
 # PYTHON310 at one (e.g. `uv python find 3.10`) to enable them.
